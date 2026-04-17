@@ -60,30 +60,6 @@ All Δ NCC well within the acceptance gates defined below. The big wins are on t
 
 `fmri_lpc` is cross-modal (EPI → T1); its low absolute NCC is expected — it's tracked as a regression signal, not an accuracy target.
 
-### Implementation note: `ntask` must scale with the decimated grid
-
-The first working draft of the patch produced a **14% regression on `ls_1mm`** (34.1 s → 38.3 s). Root cause: the coarse pass computes its sample count as
-
-```c
-stup.npt_match = ntask / 15 ;     /* [3dAllineate.c near line 5532] */
-```
-
-and `ntask = DSET_NVOX(dset_targ)` is set much earlier from the full-resolution target. On the 8×-smaller decimated volume, that request exceeds the voxel count, so [mri_genalign.c:1095-1097](../src/mri_genalign.c#L1095-L1097) saturates to `use_all = 1` — every voxel is sampled and the `qsort_int_mostly` locality pass is skipped. Result: each cost evaluation was slower, and the refinement loop ballooned from 660 → 1980 function evaluations.
-
-Fix: inside the `#ifdef ALLIN_DOWNSAMPLE_COARSE` guard, rescale `ntask` by the ratio of decimated-to-original voxel counts before the coarse pass runs, and restore it afterwards. With this in place, coarse-pass CPU dropped 49 s → 11 s on `ls_1mm`, and wall time went from 34.1 s baseline → 23.5 s (**1.45×**).
-
-Takeaway for future work: the existing `npt_match`/`ntask` heuristics are tuned for full-resolution volumes. Any change that alters the working grid must scale these counts in proportion, or sampling saturates silently.
-
-### Iteration strategy
-
-- **Inner loop (fast feedback):** `ls_2mm` (~10 s). Use this for rapid iteration on `-DALLIN_DOWNSAMPLE_COARSE` and related changes.
-- **Full regression (before PR / merge):** all five cases. Costs, modalities, and grid sizes differ enough to surface overfitting to the fast case.
-- **Acceptance gates** for a modification to be considered a win:
-  - `ls_2mm`: wall-time improves, NCC within ±0.005 of baseline.
-  - `ls_1mm`, `default`, `cmass`: wall-time improves, NCC within ±0.01 of baseline.
-  - `fmri_lpc`: NCC within ±0.02 of baseline (cross-modal cases are noisier).
-  - Peak RSS should not increase during the coarse pass (the whole point is a smaller working set there).
-
 ### Build
 
 Optimized build matching the AFNI Linux default (`-O2`). On Apple ARM (macOS 13+, Homebrew gcc-15):
